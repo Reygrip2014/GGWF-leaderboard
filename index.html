@@ -19,7 +19,7 @@
   <script type="text/babel" data-presets="env,react">
     const { useState, useEffect, useMemo } = React;
 
-    /* ===== INLINE ICONS (replacing lucide-react) ===== */
+    /* ===== INLINE ICONS ===== */
     const I = ({ size = 24, children }) => (
       <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{display:'inline-block', verticalAlign:'middle'}}>{children}</svg>
     );
@@ -156,7 +156,6 @@
     /* Resolves an event's effective state, applying auto-skip if past + unrecorded */
     function resolveResult(event, rawResult) {
       if (rawResult) return rawResult;
-      // Auto-skip events whose date has passed (24h grace period)
       const eventEnd = new Date(event.date + 'T23:59:59Z').getTime();
       const now = Date.now();
       if (now - eventEnd > 24 * 3600 * 1000) {
@@ -176,14 +175,12 @@
       const byBracket = {};
       for (const b of BRACKETS) {
         const events = SCHEDULE.filter(e => e.bracket === b);
-        // Pass 1: gather played ranks for the average (auto-skips contribute no rank data)
         const playedRanks = [];
         for (const e of events) {
           const r = results[e.id];
           if (r?.status === 'played' && r.entrants && r.finish) playedRanks.push(r.finish / r.entrants);
         }
         const avgRank = playedRanks.length ? playedRanks.reduce((a,c)=>a+c,0)/playedRanks.length : null;
-        // Pass 2: compute points using resolved (manual or auto) results
         const eventPoints = events.map(e => {
           const r = resolveResult(e, results[e.id]);
           let points = 0, status = 'pending', rank = null;
@@ -196,7 +193,6 @@
             status = 'skipped';
             rank = avgRank;
           } else if (r?.status === 'skipped') {
-            // Skipped but no avgRank yet (no played events) - 0 points until first play
             status = 'skipped';
           }
           return { event: e, points, status, rank, prizePool: r?.prizePool, entrants: r?.entrants, finish: r?.finish, auto: r?.auto };
@@ -210,7 +206,6 @@
       return byBracket;
     }
 
-    /* Format dollar amount with commas as user types. Accepts shorthand like "2.5m" or "500k". */
     function parseMoneyInput(s) {
       if (typeof s !== 'string') return s;
       const trimmed = s.trim().toLowerCase().replace(/[$,\s]/g, '');
@@ -224,7 +219,8 @@
     }
     function formatMoney(n) {
       if (n == null || isNaN(n)) return '';
-      return '
+      return '$' + Math.round(n).toLocaleString();
+    }
 
     function StatCard({ icon: Icon, label, value, subvalue, color = '#fbbf24' }) {
       return (
@@ -465,8 +461,7 @@
 
       const leaderboards = useMemo(() => computePoints(results), [results]);
       const totalPoints = BRACKETS.reduce((s, b) => s + leaderboards[b].totalPoints, 0);
-      // Counts include auto-resolved (past unrecorded) events
-      const allResolved = useMemo(() => 
+      const allResolved = useMemo(() =>
         BRACKETS.flatMap(b => leaderboards[b].eventPoints), [leaderboards]);
       const playedCount = allResolved.filter(ep => ep.status === 'played').length;
       const skippedCount = allResolved.filter(ep => ep.status === 'skipped').length;
@@ -526,374 +521,6 @@
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
               <StatCard icon={Trophy} label="Total Points" value={totalPoints.toFixed(2)} subvalue="across all 4 brackets" color="#fbbf24" />
               <StatCard icon={Target} label="Events Played" value={playedCount} subvalue={`${skippedCount} skipped${autoSkippedCount ? ` (${autoSkippedCount} auto)` : ''} • ${SCHEDULE.length - playedCount - skippedCount} upcoming`} color="#10b981" />
-              <StatCard icon={Flame} label="Best Score" value={(() => {
-                const all = BRACKETS.flatMap(b => leaderboards[b].eventPoints).filter(e => e.status === 'played');
-                if (!all.length) return '—';
-                const top = all.reduce((b, e) => e.points > (b?.points || 0) ? e : b, null);
-                return top ? top.points.toFixed(2) : '—';
-              })()} subvalue={(() => {
-                const all = BRACKETS.flatMap(b => leaderboards[b].eventPoints).filter(e => e.status === 'played');
-                if (!all.length) return 'no plays yet';
-                const top = all.reduce((b, e) => e.points > (b?.points || 0) ? e : b, null);
-                return top ? `#${top.event.num}-${top.event.bracket} ${top.event.name.slice(0,20)}` : '—';
-              })()} color="#ef4444" />
-              <StatCard icon={Award} label="Best Finish" value={(() => {
-                const all = BRACKETS.flatMap(b => leaderboards[b].eventPoints).filter(e => e.status === 'played' && e.rank);
-                if (!all.length) return '—';
-                const best = all.reduce((b, e) => (b == null || e.rank < b.rank ? e : b), null);
-                return best ? `${best.finish}/${best.entrants}` : '—';
-              })()} subvalue={(() => {
-                const all = BRACKETS.flatMap(b => leaderboards[b].eventPoints).filter(e => e.status === 'played' && e.rank);
-                if (!all.length) return 'no plays yet';
-                const best = all.reduce((b, e) => (b == null || e.rank < b.rank ? e : b), null);
-                return best ? `top ${(best.rank * 100).toFixed(1)}%` : '—';
-              })()} color="#3b82f6" />
-            </div>
-
-            <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
-              <button onClick={() => setActiveBracket('overview')} className={`px-4 py-2 rounded-lg font-semibold text-sm flex-shrink-0 transition-all ${activeBracket === 'overview' ? 'bg-white text-black' : 'bg-zinc-900 text-zinc-300 hover:bg-zinc-800'}`}><BarChart3 size={14} /> Overview</button>
-              {BRACKETS.map(b => (
-                <button key={b} onClick={() => { setActiveBracket(b); setFilter('all'); }} className={`px-4 py-2 rounded-lg font-semibold text-sm flex-shrink-0 transition-all ${activeBracket === b ? 'text-black' : 'bg-zinc-900 text-zinc-300 hover:bg-zinc-800'}`} style={activeBracket === b ? { backgroundColor: BRACKET_COLOR[b] } : {}}>
-                  {BRACKET_LABEL[b]} ({b}) · {leaderboards[b].totalPoints.toFixed(1)}
-                </button>
-              ))}
-            </div>
-
-            {activeBracket === 'overview' && (
-              <div className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {BRACKETS.map(b => {
-                    const lb = leaderboards[b];
-                    const total = SCHEDULE.filter(e => e.bracket === b).length;
-                    return (
-                      <button key={b} onClick={() => setActiveBracket(b)} className="bg-gradient-to-br from-zinc-900 to-zinc-950 border-2 rounded-xl p-5 text-left hover:scale-[1.01] transition-transform" style={{ borderColor: BRACKET_COLOR[b] + '66' }}>
-                        <div className="flex justify-between items-start mb-3">
-                          <div>
-                            <div className="text-xs uppercase tracking-widest font-bold" style={{ color: BRACKET_COLOR[b] }}>{BRACKET_LABEL[b]} Bracket</div>
-                            <div className="text-4xl font-black tabular-nums mt-1" style={{ color: BRACKET_COLOR[b] }}>{lb.totalPoints.toFixed(2)}</div>
-                          </div>
-                          <div className="text-right text-xs text-zinc-500"><div>{lb.playedCount} played</div><div>{total} events</div></div>
-                        </div>
-                        <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-                          <div className="h-full" style={{ width: `${(lb.playedCount/total)*100}%`, backgroundColor: BRACKET_COLOR[b] }}></div>
-                        </div>
-                        {lb.avgRank != null && <div className="text-xs text-zinc-400 mt-3">Avg finish: <span className="font-mono text-white">top {(lb.avgRank * 100).toFixed(1)}%</span></div>}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="bg-zinc-900/40 border border-zinc-800 rounded-xl p-5">
-                  <h3 className="text-amber-400 font-bold text-sm uppercase tracking-wider mb-3 flex items-center gap-2"><Zap size={16} /> How Points Are Calculated</h3>
-                  <div className="text-sm text-zinc-300 space-y-2 leading-relaxed">
-                    <p><span className="text-amber-400 font-mono">Points = log₁₀(Prize Pool) ÷ √(Relative Rank)</span></p>
-                    <p>Where <span className="text-zinc-100">Relative Rank = Finish ÷ Total Entrants</span> (lower is better — 1st in 1000 = 0.001).</p>
-                    <p>For events you skip, your <span className="text-amber-400 font-semibold">average relative rank in that bracket</span> is used so you're not penalized for sitting out.</p>
-                    <p className="text-zinc-500 text-xs pt-2 border-t border-zinc-800">Tip: open any event and mark it Played, Skipped, or leave it pending. Stream Mode gives you a clean overlay you can capture with OBS as a browser source.</p>
-                  </div>
-                </div>
-                {(playedCount + skippedCount) > 0 && (
-                  <div className="text-center">
-                    <button onClick={() => { if (confirm('Clear all entries?')) setResults({}); }} className="text-xs text-zinc-500 hover:text-red-400 underline">Reset all entries</button>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {activeBracket !== 'overview' && (
-              <div>
-                <div className="bg-zinc-900/40 border border-zinc-800 rounded-xl p-5 mb-4">
-                  <div className="flex flex-wrap gap-6 items-baseline">
-                    <div>
-                      <div className="text-xs uppercase tracking-widest text-zinc-400">Total Points</div>
-                      <div className="text-4xl font-black tabular-nums" style={{ color: BRACKET_COLOR[activeBracket] }}>{leaderboards[activeBracket].totalPoints.toFixed(2)}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs uppercase tracking-widest text-zinc-400">Played</div>
-                      <div className="text-2xl font-bold text-white">{leaderboards[activeBracket].playedCount}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs uppercase tracking-widest text-zinc-400">Avg Rank</div>
-                      <div className="text-2xl font-bold text-white">{leaderboards[activeBracket].avgRank != null ? `top ${(leaderboards[activeBracket].avgRank * 100).toFixed(1)}%` : '—'}</div>
-                    </div>
-                    {leaderboards[activeBracket].biggestScore?.points > 0 && (
-                      <div>
-                        <div className="text-xs uppercase tracking-widest text-zinc-400">Biggest score</div>
-                        <div className="text-2xl font-bold text-amber-400 font-mono">+{leaderboards[activeBracket].biggestScore.points.toFixed(2)}</div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div className="flex gap-2 mb-3 overflow-x-auto">
-                  {[{v:'all',l:'All'},{v:'played',l:'Played'},{v:'skipped',l:'Skipped'},{v:'past-pending',l:'Need to Record'},{v:'upcoming',l:'Upcoming'}].map(f => (
-                    <button key={f.v} onClick={() => setFilter(f.v)} className={`px-3 py-1.5 rounded text-xs font-semibold flex-shrink-0 ${filter === f.v ? 'bg-zinc-700 text-white' : 'bg-zinc-900 text-zinc-400 hover:text-white'}`}>{f.l}</button>
-                  ))}
-                </div>
-                <div className="space-y-4">
-                  {Object.keys(eventsByDate).length === 0 && <div className="text-center text-zinc-500 py-12">No events match this filter.</div>}
-                  {Object.keys(eventsByDate).sort().map(date => (
-                    <div key={date}>
-                      <div className="flex items-center gap-2 text-xs text-zinc-400 uppercase tracking-wider font-bold mb-2 px-1"><Calendar size={12} />{fmtDate(date)}</div>
-                      <div className="space-y-1.5">
-                        {eventsByDate[date].sort((a,b) => a.event.time.localeCompare(b.event.time)).map(ep => (
-                          <EventRow key={ep.event.id} ep={ep} onClick={() => setEditEvent(ep.event)} />
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-          {editEvent && <EventModal event={editEvent} result={results[editEvent.id]} onSave={(data) => handleSaveResult(editEvent.id, data)} onClose={() => setEditEvent(null)} />}
-        </div>
-      );
-    }
-
-    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
-  </script>
-</body>
-</html>
- + Math.round(n).toLocaleString();
-    }
-
-    function StatCard({ icon: Icon, label, value, subvalue, color = '#fbbf24' }) {
-      return (
-        <div className="bg-zinc-900/60 backdrop-blur border border-zinc-800 rounded-lg p-4 flex items-center gap-3">
-          <div className="rounded-lg p-2" style={{ backgroundColor: color + '22', color }}><Icon size={20} /></div>
-          <div className="flex-1 min-w-0">
-            <div className="text-xs text-zinc-400 uppercase tracking-wide">{label}</div>
-            <div className="text-xl font-bold text-white truncate">{value}</div>
-            {subvalue && <div className="text-xs text-zinc-500 truncate">{subvalue}</div>}
-          </div>
-        </div>
-      );
-    }
-
-    function EventModal({ event, result, onSave, onClose }) {
-      const [status, setStatus] = useState(result?.status || 'played');
-      const [prizePool, setPrizePool] = useState(result?.prizePool ?? '');
-      const [entrants, setEntrants] = useState(result?.entrants ?? '');
-      const [finish, setFinish] = useState(result?.finish ?? '');
-      const handleSave = () => {
-        if (status === 'pending') onSave(null);
-        else onSave({
-          status,
-          prizePool: prizePool === '' ? null : Number(prizePool),
-          entrants: entrants === '' ? null : Number(entrants),
-          finish: status === 'played' ? (finish === '' ? null : Number(finish)) : null,
-        });
-        onClose();
-      };
-      return (
-        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4" onClick={onClose}>
-          <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 max-w-md w-full" onClick={e => e.stopPropagation()}>
-            <div className="flex items-start justify-between mb-4">
-              <div>
-                <div className="text-xs uppercase tracking-wider font-bold" style={{ color: BRACKET_COLOR[event.bracket] }}>Event #{event.num} • {BRACKET_LABEL[event.bracket]}</div>
-                <h3 className="text-lg font-bold text-white mt-1">{event.name}</h3>
-                <div className="text-xs text-zinc-400 mt-1">{fmtDate(event.date)} • {event.time} UTC • Buy-in {fmt$(event.buyIn)} • GTD {fmt$(event.gtd)}</div>
-              </div>
-              <button onClick={onClose} className="text-zinc-400 hover:text-white"><X size={20} /></button>
-            </div>
-            <div className="space-y-4">
-              <div>
-                <label className="text-xs text-zinc-400 uppercase tracking-wide block mb-2">Status</label>
-                <div className="grid grid-cols-3 gap-2">
-                  {[{v:'played',l:'Played'},{v:'skipped',l:'Skipped'},{v:'pending',l:'Clear'}].map(o => (
-                    <button key={o.v} onClick={() => setStatus(o.v)} className={`py-2 px-3 rounded text-sm font-semibold transition-all ${status === o.v ? 'bg-amber-500 text-black' : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'}`}>{o.l}</button>
-                  ))}
-                </div>
-              </div>
-              {status !== 'pending' && (
-                <>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-xs text-zinc-400 uppercase tracking-wide block mb-1">Prize Pool ($)</label>
-                      <input type="number" value={prizePool} onChange={e => setPrizePool(e.target.value)} placeholder={String(event.gtd)} className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500" />
-                    </div>
-                    <div>
-                      <label className="text-xs text-zinc-400 uppercase tracking-wide block mb-1">Total Entrants</label>
-                      <input type="number" value={entrants} onChange={e => setEntrants(e.target.value)} placeholder="e.g. 1284" className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500" />
-                    </div>
-                  </div>
-                  {status === 'played' && (
-                    <div>
-                      <label className="text-xs text-zinc-400 uppercase tracking-wide block mb-1">Your Finish Position</label>
-                      <input type="number" value={finish} onChange={e => setFinish(e.target.value)} placeholder="e.g. 47" className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500" />
-                    </div>
-                  )}
-                  {status === 'skipped' && (
-                    <div className="text-xs text-zinc-400 bg-zinc-800/50 rounded p-3 leading-relaxed">Skipped events use your <span className="text-amber-400 font-semibold">average relative rank</span> for this bracket — so sitting out won't penalize you.</div>
-                  )}
-                </>
-              )}
-              <div className="flex gap-2 pt-2">
-                <button onClick={onClose} className="flex-1 py-2 bg-zinc-800 hover:bg-zinc-700 text-white rounded font-semibold text-sm">Cancel</button>
-                <button onClick={handleSave} className="flex-1 py-2 bg-amber-500 hover:bg-amber-400 text-black rounded font-semibold text-sm">Save</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      );
-    }
-
-    function EventRow({ ep, onClick }) {
-      const { event, points, status, rank, prizePool, finish, entrants } = ep;
-      const past = isPast(event.date);
-      const statusBadge = {
-        played: <span className="text-emerald-400 text-xs font-bold">PLAYED</span>,
-        skipped: <span className="text-zinc-500 text-xs font-bold">SKIPPED</span>,
-        pending: past ? <span className="text-orange-400 text-xs font-bold">UNRECORDED</span> : <span className="text-zinc-600 text-xs font-bold">UPCOMING</span>,
-      }[status];
-      return (
-        <button onClick={onClick} className="w-full text-left bg-zinc-900/50 hover:bg-zinc-800/70 border border-zinc-800 rounded-lg p-3 flex items-center gap-3 transition-all">
-          <div className="w-12 text-center flex-shrink-0">
-            <div className="text-xs text-zinc-500">#{event.num}</div>
-            <div className="text-xs text-zinc-600">{event.time}</div>
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="text-white font-semibold text-sm truncate">{event.name}</div>
-            <div className="text-xs text-zinc-500 flex gap-3 mt-0.5">
-              <span>{fmtDate(event.date)}</span>
-              <span>{fmt$(event.buyIn)}</span>
-              {prizePool && <span>{fmt$(prizePool)} pool</span>}
-              {finish && entrants && <span className="text-amber-400">{finish}/{entrants}</span>}
-            </div>
-          </div>
-          <div className="text-right flex-shrink-0">
-            {points > 0 ? <div className="text-amber-400 font-mono font-bold">+{points.toFixed(2)}</div> : <div className="text-zinc-700">—</div>}
-            <div className="mt-0.5">{statusBadge}</div>
-          </div>
-          <Edit3 size={14} />
-        </button>
-      );
-    }
-
-    function StreamOverlay({ leaderboards, results }) {
-      const totalEvents = SCHEDULE.length;
-      const playedTotal = Object.values(results).filter(r => r?.status === 'played').length;
-      return (
-        <div className="min-h-screen bg-black text-white p-8">
-          <div className="max-w-5xl mx-auto">
-            <div className="flex items-center gap-4 mb-8">
-              <div className="flex">
-                <div className="w-3 h-12 bg-black border border-zinc-700"></div>
-                <div className="w-3 h-12 bg-yellow-400"></div>
-                <div className="w-3 h-12 bg-red-600"></div>
-              </div>
-              <div>
-                <h1 className="text-3xl font-black tracking-tight">BELGIAN SHADOW LEADERBOARD</h1>
-                <p className="text-zinc-400 text-sm uppercase tracking-widest">GGpoker World Festival 2026 • Unofficial Side Run</p>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-              {BRACKETS.map(b => {
-                const lb = leaderboards[b];
-                return (
-                  <div key={b} className="bg-gradient-to-br from-zinc-900 to-black border-2 rounded-xl p-5" style={{ borderColor: BRACKET_COLOR[b] }}>
-                    <div className="text-xs uppercase tracking-widest font-bold mb-1" style={{ color: BRACKET_COLOR[b] }}>{BRACKET_LABEL[b]} ({b})</div>
-                    <div className="text-5xl font-black tabular-nums" style={{ color: BRACKET_COLOR[b] }}>{lb.totalPoints.toFixed(1)}</div>
-                    <div className="text-xs text-zinc-500 mt-2">{lb.playedCount} played</div>
-                    {lb.bestFinish && <div className="text-xs text-zinc-400 mt-1 truncate">Best: {lb.bestFinish.finish}/{lb.bestFinish.entrants} • #{lb.bestFinish.event.num}</div>}
-                  </div>
-                );
-              })}
-            </div>
-            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
-              <div className="flex justify-between items-baseline mb-3">
-                <div className="text-xs uppercase tracking-widest font-bold text-amber-400">Festival Progress</div>
-                <div className="text-sm text-zinc-300"><span className="font-bold text-white">{playedTotal}</span> events played <span className="text-zinc-600 mx-2">/</span>{totalEvents} total</div>
-              </div>
-              <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-yellow-400 to-red-500" style={{ width: `${(playedTotal/totalEvents)*100}%` }}></div>
-              </div>
-            </div>
-          </div>
-        </div>
-      );
-    }
-
-    function App() {
-      const [results, setResults] = useState({});
-      const [activeBracket, setActiveBracket] = useState('overview');
-      const [editEvent, setEditEvent] = useState(null);
-      const [streamMode, setStreamMode] = useState(false);
-      const [filter, setFilter] = useState('all');
-      const [loaded, setLoaded] = useState(false);
-
-      useEffect(() => {
-        try {
-          const r = localStorage.getItem('ggpoker-tracker-results');
-          if (r) setResults(JSON.parse(r));
-        } catch (e) {}
-        setLoaded(true);
-      }, []);
-
-      useEffect(() => {
-        if (!loaded) return;
-        try { localStorage.setItem('ggpoker-tracker-results', JSON.stringify(results)); }
-        catch (e) { console.error('save failed', e); }
-      }, [results, loaded]);
-
-      const leaderboards = useMemo(() => computePoints(results), [results]);
-      const totalPoints = BRACKETS.reduce((s, b) => s + leaderboards[b].totalPoints, 0);
-      const playedCount = Object.values(results).filter(r => r?.status === 'played').length;
-      const skippedCount = Object.values(results).filter(r => r?.status === 'skipped').length;
-
-      const handleSaveResult = (eventId, data) => {
-        setResults(prev => {
-          const next = { ...prev };
-          if (data === null) delete next[eventId];
-          else next[eventId] = data;
-          return next;
-        });
-      };
-
-      if (streamMode) {
-        return (
-          <div className="relative">
-            <StreamOverlay leaderboards={leaderboards} results={results} />
-            <button onClick={() => setStreamMode(false)} className="fixed top-4 right-4 bg-zinc-800 hover:bg-zinc-700 text-white px-3 py-2 rounded text-xs flex items-center gap-2"><EyeOff size={14} /> Exit Stream</button>
-          </div>
-        );
-      }
-
-      const eventsToShow = activeBracket === 'overview' ? [] : leaderboards[activeBracket].eventPoints.filter(ep => {
-        if (filter === 'played') return ep.status === 'played';
-        if (filter === 'skipped') return ep.status === 'skipped';
-        if (filter === 'past-pending') return ep.status === 'pending' && isPast(ep.event.date);
-        if (filter === 'upcoming') return ep.status === 'pending' && !isPast(ep.event.date);
-        return true;
-      });
-      const eventsByDate = {};
-      eventsToShow.forEach(ep => { if (!eventsByDate[ep.event.date]) eventsByDate[ep.event.date] = []; eventsByDate[ep.event.date].push(ep); });
-
-      return (
-        <div className="min-h-screen text-white" style={{
-          backgroundColor: '#09090b',
-          backgroundImage: 'radial-gradient(circle at 20% 0%, rgba(251,191,36,0.05) 0%, transparent 50%), radial-gradient(circle at 80% 100%, rgba(220,38,38,0.05) 0%, transparent 50%)'
-        }}>
-          <div className="max-w-6xl mx-auto p-4 md:p-6">
-            <header className="mb-6">
-              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-                <div className="flex items-center gap-3">
-                  <div className="flex">
-                    <div className="w-2 h-10 bg-black border border-zinc-700"></div>
-                    <div className="w-2 h-10 bg-yellow-400"></div>
-                    <div className="w-2 h-10 bg-red-600"></div>
-                  </div>
-                  <div>
-                    <h1 className="text-2xl md:text-3xl font-black tracking-tight">Belgian Shadow Leaderboard</h1>
-                    <p className="text-zinc-400 text-xs uppercase tracking-widest">GGpoker World Festival 2026 • Unofficial</p>
-                  </div>
-                </div>
-                <button onClick={() => setStreamMode(true)} className="bg-gradient-to-r from-amber-500 to-red-600 hover:from-amber-400 hover:to-red-500 text-black font-bold px-4 py-2 rounded-lg flex items-center gap-2 text-sm"><Eye size={16} /> Stream Mode</button>
-              </div>
-            </header>
-
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-              <StatCard icon={Trophy} label="Total Points" value={totalPoints.toFixed(2)} subvalue="across all 4 brackets" color="#fbbf24" />
-              <StatCard icon={Target} label="Events Played" value={playedCount} subvalue={`${skippedCount} skipped • ${SCHEDULE.length - playedCount - skippedCount} unrecorded`} color="#10b981" />
               <StatCard icon={Flame} label="Best Score" value={(() => {
                 const all = BRACKETS.flatMap(b => leaderboards[b].eventPoints).filter(e => e.status === 'played');
                 if (!all.length) return '—';
