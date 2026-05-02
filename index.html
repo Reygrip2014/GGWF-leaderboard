@@ -34,6 +34,9 @@
     const Calendar = (p) => <I {...p}><rect width="18" height="18" x="3" y="4" rx="2" ry="2"/><line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/></I>;
     const BarChart3 = (p) => <I {...p}><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></I>;
     const Zap = (p) => <I {...p}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></I>;
+    const AlertTriangle = (p) => <I {...p}><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></I>;
+    const DollarSign = (p) => <I {...p}><line x1="12" x2="12" y1="2" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></I>;
+    const Lock = (p) => <I {...p}><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></I>;
 
     /* ===== SCHEDULE TEMPLATE ===== */
     const WEEK_TEMPLATE = [
@@ -153,6 +156,23 @@
     }
     function isPast(dateStr) { return new Date(dateStr + 'T23:59:59Z') < new Date(); }
 
+    /* In the money = top 20% or better */
+    function inTheMoney(finish, entrants) {
+      if (!finish || !entrants) return false;
+      return (finish / entrants) <= 0.20;
+    }
+    /* Top 10% rounded down: finish <= floor(0.10 * entrants) */
+    function isTop10Pct(finish, entrants) {
+      if (!finish || !entrants) return false;
+      const cutoff = Math.floor(entrants * 0.10);
+      return cutoff > 0 && finish <= cutoff;
+    }
+    function fmtPL(n) {
+      if (n == null || isNaN(n)) return '—';
+      const sign = n > 0 ? '+' : n < 0 ? '−' : '';
+      return sign + '$' + Math.abs(Math.round(n)).toLocaleString();
+    }
+
     /* Resolves an event's effective state, applying auto-skip if past + unrecorded */
     function resolveResult(event, rawResult) {
       if (rawResult) return rawResult;
@@ -195,13 +215,35 @@
           } else if (r?.status === 'skipped') {
             status = 'skipped';
           }
-          return { event: e, points, status, rank, prizePool: r?.prizePool, entrants: r?.entrants, finish: r?.finish, auto: r?.auto };
+          // Money tracking
+          let net = null, itm = false, top10 = false, missingWinnings = false;
+          if (r?.status === 'played' && r.finish && r.entrants) {
+            itm = inTheMoney(r.finish, r.entrants);
+            top10 = isTop10Pct(r.finish, r.entrants);
+            if (r.winnings != null && !isNaN(r.winnings)) {
+              net = r.winnings - e.buyIn;
+            } else {
+              missingWinnings = true; // played but winnings not recorded
+            }
+          }
+          return { event: e, points, status, rank, prizePool: r?.prizePool, entrants: r?.entrants, finish: r?.finish, auto: r?.auto, winnings: r?.winnings, itm, top10, net, missingWinnings };
         });
         const totalPoints = eventPoints.reduce((s, ep) => s + ep.points, 0);
         const playedEvents = eventPoints.filter(ep => ep.status === 'played');
         const bestFinish = playedEvents.length ? playedEvents.reduce((b, e) => (b == null || e.rank < b.rank ? e : b), null) : null;
         const biggestScore = eventPoints.length ? eventPoints.reduce((b, e) => e.points > (b?.points || 0) ? e : b, null) : null;
-        byBracket[b] = { totalPoints, eventPoints, avgRank, playedCount: playedRanks.length, bestFinish, biggestScore };
+        // Bracket P/L: count buy-in lost for missing-winnings events (worst case)
+        let bracketPL = 0, bracketPending = 0, bracketPendingTop10 = 0;
+        for (const ep of eventPoints) {
+          if (ep.status !== 'played' || !ep.finish || !ep.entrants) continue;
+          if (ep.net != null) bracketPL += ep.net;
+          else {
+            bracketPL -= ep.event.buyIn;
+            bracketPending++;
+            if (ep.top10) bracketPendingTop10++;
+          }
+        }
+        byBracket[b] = { totalPoints, eventPoints, avgRank, playedCount: playedRanks.length, bestFinish, biggestScore, bracketPL, bracketPending, bracketPendingTop10 };
       }
       return byBracket;
     }
@@ -244,21 +286,27 @@
         result?.entrants != null ? String(result.entrants) : ''
       );
       const [finishStr, setFinishStr] = useState(result?.finish != null ? String(result.finish) : '');
+      const [winningsStr, setWinningsStr] = useState(result?.winnings != null ? String(result.winnings) : '');
 
       const prizePool = parseMoneyInput(prizePoolStr);
       const entrants = entrantsStr === '' ? null : parseInt(entrantsStr, 10);
       const finish = finishStr === '' ? null : parseInt(finishStr, 10);
+      const winnings = parseMoneyInput(winningsStr);
 
       const prizePoolValid = prizePoolStr === '' || (prizePool != null && prizePool > 0);
       const entrantsValid = entrants == null || (entrants > 0 && Number.isFinite(entrants));
       const finishValid = finish == null || (finish > 0 && (entrants == null || finish <= entrants));
+      const winningsValid = winningsStr === '' || (winnings != null && winnings >= 0);
+
+      const itm = inTheMoney(finish, entrants);
+      const top10 = isTop10Pct(finish, entrants);
 
       const finishError = finish != null && entrants != null && finish > entrants
         ? `Finish (${finish}) can't exceed entrants (${entrants})`
         : null;
 
       const canSave = status === 'pending' || (
-        prizePoolValid && entrantsValid && finishValid &&
+        prizePoolValid && entrantsValid && finishValid && winningsValid &&
         (status !== 'played' || (finish != null && entrants != null))
       );
 
@@ -270,6 +318,7 @@
           prizePool: prizePool || null,
           entrants: entrants || null,
           finish: status === 'played' ? finish : null,
+          winnings: status === 'played' && winningsStr !== '' && winnings != null ? winnings : null,
         });
         onClose();
       };
@@ -290,7 +339,13 @@
                 <label className="text-xs text-zinc-400 uppercase tracking-wide block mb-2">Status</label>
                 <div className="grid grid-cols-3 gap-2">
                   {[{v:'played',l:'Played'},{v:'skipped',l:'Skipped'},{v:'pending',l:'Clear'}].map(o => (
-                    <button key={o.v} onClick={() => setStatus(o.v)} className={`py-2 px-3 rounded text-sm font-semibold transition-all ${status === o.v ? 'bg-amber-500 text-black' : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'}`}>{o.l}</button>
+                    <button key={o.v} onClick={() => {
+                      setStatus(o.v);
+                      if (o.v === 'skipped' && entrantsStr === '') {
+                        const pp = parseMoneyInput(prizePoolStr) || event.gtd;
+                        setEntrantsStr(String(Math.max(1, Math.round(pp / event.buyIn))));
+                      }
+                    }} className={`py-2 px-3 rounded text-sm font-semibold transition-all ${status === o.v ? 'bg-amber-500 text-black' : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'}`}>{o.l}</button>
                   ))}
                 </div>
               </div>
@@ -341,8 +396,35 @@
                       {!finishError && finish != null && entrants != null && (
                         <div className="text-xs mt-1 text-zinc-500">
                           Top {((finish / entrants) * 100).toFixed(2)}% of the field
+                          {top10 && <span className="text-amber-400 font-semibold"> • top 10%</span>}
                         </div>
                       )}
+                    </div>
+                  )}
+                  {status === 'played' && (
+                    <div>
+                      <label className="text-xs uppercase tracking-wide flex items-center gap-2 mb-1">
+                        <span className="text-zinc-400">Total Cash Won</span>
+                        <span className="text-zinc-600 normal-case tracking-normal text-[11px]">incl. bounties</span>
+                        {top10 && winningsStr === '' && (
+                          <span className="text-amber-400 font-bold flex items-center gap-1 normal-case tracking-normal text-[11px]"><AlertTriangle size={11} /> top 10% — please record</span>
+                        )}
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={winningsStr}
+                        onChange={e => setWinningsStr(e.target.value)}
+                        placeholder="0"
+                        className={`w-full bg-zinc-800 border rounded px-3 py-2 text-white text-sm focus:outline-none ${winningsValid ? 'border-zinc-700 focus:border-amber-500' : 'border-red-500'}`}
+                      />
+                      <div className="text-xs mt-1 h-4">
+                        {winnings != null && winningsValid && winningsStr !== '' && (
+                          <span className="text-emerald-400 font-mono">{formatMoney(winnings)}</span>
+                        )}
+                        {!winningsValid && <span className="text-red-400">Invalid amount</span>}
+                        {winningsStr === '' && <span className="text-zinc-500">Leave blank if not yet known — or enter 0 for no cash</span>}
+                      </div>
                     </div>
                   )}
                   {status === 'skipped' && (
@@ -361,8 +443,9 @@
     }
 
     function EventRow({ ep, onClick }) {
-      const { event, points, status, rank, prizePool, finish, entrants, auto } = ep;
+      const { event, points, status, rank, prizePool, finish, entrants, auto, winnings, missingWinnings, top10 } = ep;
       const past = isPast(event.date);
+      const warnMissing = missingWinnings && top10;
       const statusBadge = {
         played: <span className="text-emerald-400 text-xs font-bold">PLAYED</span>,
         skipped: auto
@@ -371,18 +454,27 @@
         pending: past ? <span className="text-orange-400 text-xs font-bold">UNRECORDED</span> : <span className="text-zinc-600 text-xs font-bold">UPCOMING</span>,
       }[status];
       return (
-        <button onClick={onClick} className={`w-full text-left bg-zinc-900/50 hover:bg-zinc-800/70 border rounded-lg p-3 flex items-center gap-3 transition-all ${auto ? 'border-zinc-800/50' : 'border-zinc-800'}`}>
+        <button onClick={onClick} className={`w-full text-left bg-zinc-900/50 hover:bg-zinc-800/70 border rounded-lg p-3 flex items-center gap-3 transition-all ${warnMissing ? 'border-amber-500/40' : auto ? 'border-zinc-800/50' : 'border-zinc-800'}`}>
           <div className="w-12 text-center flex-shrink-0">
             <div className="text-xs text-zinc-500">#{event.num}</div>
             <div className="text-xs text-zinc-600">{event.time}</div>
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-white font-semibold text-sm truncate">{event.name}</div>
-            <div className="text-xs text-zinc-500 flex gap-3 mt-0.5 flex-wrap">
+            <div className="text-white font-semibold text-sm truncate flex items-center gap-2">
+              {event.name}
+              {warnMissing && <span className="text-amber-400 flex-shrink-0" title="Top 10% finish — winnings not recorded"><AlertTriangle size={13} /></span>}
+            </div>
+            <div className="text-xs text-zinc-500 flex gap-3 mt-0.5 flex-wrap items-center">
               <span>{fmtDate(event.date)}</span>
               <span>{fmt$(event.buyIn)}</span>
               {prizePool && <span>{fmt$(prizePool)} pool</span>}
               {finish && entrants && <span className="text-amber-400">{finish}/{entrants}</span>}
+              {status === 'played' && winnings != null && (
+                <span className={`font-mono font-semibold ${winnings > 0 ? 'text-emerald-400' : 'text-zinc-400'}`}>{fmt$(winnings)} won</span>
+              )}
+              {status === 'played' && missingWinnings && warnMissing && (
+                <span className="text-amber-400 font-semibold">winnings?</span>
+              )}
             </div>
           </div>
           <div className="text-right flex-shrink-0">
@@ -394,7 +486,7 @@
       );
     }
 
-    function StreamOverlay({ leaderboards, results, playedCount }) {
+    function StreamOverlay({ leaderboards, results, playedCount, totalPoints, netPL, externalRanks }) {
       const totalEvents = SCHEDULE.length;
       return (
         <div className="min-h-screen bg-black text-white p-8">
@@ -410,13 +502,30 @@
                 <p className="text-zinc-400 text-sm uppercase tracking-widest">GGpoker World Festival 2026 • Unofficial Side Run</p>
               </div>
             </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+              <div className="bg-gradient-to-br from-amber-900/30 to-amber-950/60 border-2 border-amber-500/50 rounded-xl p-6">
+                <div className="text-xs uppercase tracking-widest font-bold text-amber-400 mb-1">Total Points</div>
+                <div className="text-6xl font-black tabular-nums text-amber-300">{totalPoints.toFixed(1)}</div>
+              </div>
+              <div className={`bg-gradient-to-br border-2 rounded-xl p-6 ${netPL > 0 ? 'from-emerald-900/30 to-emerald-950/60 border-emerald-500/50' : netPL < 0 ? 'from-red-900/30 to-red-950/60 border-red-500/50' : 'from-zinc-900 to-zinc-950 border-zinc-700'}`}>
+                <div className={`text-xs uppercase tracking-widest font-bold mb-1 ${netPL > 0 ? 'text-emerald-400' : netPL < 0 ? 'text-red-400' : 'text-zinc-400'}`}>Net Profit / Loss</div>
+                <div className={`text-6xl font-black tabular-nums ${netPL > 0 ? 'text-emerald-300' : netPL < 0 ? 'text-red-300' : 'text-zinc-300'}`}>{fmtPL(netPL)}</div>
+              </div>
+            </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
               {BRACKETS.map(b => {
                 const lb = leaderboards[b];
+                const ext = externalRanks?.[b];
                 return (
                   <div key={b} className="bg-gradient-to-br from-zinc-900 to-black border-2 rounded-xl p-5" style={{ borderColor: BRACKET_COLOR[b] }}>
                     <div className="text-xs uppercase tracking-widest font-bold mb-1" style={{ color: BRACKET_COLOR[b] }}>{BRACKET_LABEL[b]} ({b})</div>
                     <div className="text-5xl font-black tabular-nums" style={{ color: BRACKET_COLOR[b] }}>{lb.totalPoints.toFixed(1)}</div>
+                    {ext && (
+                      <div className="mt-2 flex items-baseline gap-1.5">
+                        <span className="text-zinc-500 text-[10px] uppercase tracking-widest font-bold">Rank</span>
+                        <span className="text-white text-base font-bold">{ext}</span>
+                      </div>
+                    )}
                     <div className="text-xs text-zinc-500 mt-2">{lb.playedCount} played</div>
                     {lb.bestFinish && <div className="text-xs text-zinc-400 mt-1 truncate">Best: {lb.bestFinish.finish}/{lb.bestFinish.entrants} • #{lb.bestFinish.event.num}</div>}
                   </div>
@@ -437,6 +546,124 @@
       );
     }
 
+    function ImportModal({ currentResults, currentExternalRanks, onImport, onClose }) {
+      const [text, setText] = useState('');
+      const [parsed, setParsed] = useState(null);
+      const [error, setError] = useState(null);
+      const [copied, setCopied] = useState(false);
+
+      const exportJSON = useMemo(() => JSON.stringify({
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        results: currentResults,
+        externalRanks: currentExternalRanks,
+      }, null, 2), [currentResults, currentExternalRanks]);
+
+      const handleParse = (val) => {
+        setText(val);
+        if (!val.trim()) { setParsed(null); setError(null); return; }
+        try {
+          const obj = JSON.parse(val);
+          const r = obj && typeof obj === 'object' && obj.results && typeof obj.results === 'object' ? obj.results : obj;
+          if (!r || typeof r !== 'object' || Array.isArray(r)) throw new Error('Expected an object of results keyed by event id (e.g. "47-S")');
+          const ext = obj && typeof obj === 'object' && obj.externalRanks && typeof obj.externalRanks === 'object' ? obj.externalRanks : null;
+          // light validation
+          const validKeys = new Set(SCHEDULE.map(e => e.id));
+          let valid = 0, invalid = 0, invalidIds = [];
+          for (const k of Object.keys(r)) {
+            if (validKeys.has(k)) valid++;
+            else { invalid++; if (invalidIds.length < 3) invalidIds.push(k); }
+          }
+          setParsed({ results: r, externalRanks: ext, valid, invalid, invalidIds });
+          setError(null);
+        } catch (e) {
+          setParsed(null);
+          setError(e.message);
+        }
+      };
+
+      const handleCopy = async () => {
+        try {
+          await navigator.clipboard.writeText(exportJSON);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1800);
+        } catch (e) {
+          // Fallback: select textarea text
+          const ta = document.getElementById('export-textarea');
+          if (ta) { ta.select(); document.execCommand('copy'); setCopied(true); setTimeout(() => setCopied(false), 1800); }
+        }
+      };
+
+      const handleApply = (mode) => {
+        if (!parsed) return;
+        onImport(parsed.results, parsed.externalRanks, mode);
+        onClose();
+      };
+
+      return (
+        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4" onClick={onClose}>
+          <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start justify-between mb-4">
+              <h3 className="text-lg font-bold text-white">Import / Export Data</h3>
+              <button onClick={onClose} className="text-zinc-400 hover:text-white"><X size={20} /></button>
+            </div>
+
+            <div className="mb-6">
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-xs text-zinc-400 uppercase tracking-wide font-bold">Export</label>
+                <button onClick={handleCopy} className="text-xs bg-amber-500 hover:bg-amber-400 text-black font-semibold px-3 py-1 rounded">{copied ? 'Copied!' : 'Copy to clipboard'}</button>
+              </div>
+              <textarea
+                id="export-textarea"
+                readOnly
+                value={exportJSON}
+                className="w-full h-32 bg-zinc-950 border border-zinc-800 rounded p-2 text-xs font-mono text-zinc-300 focus:outline-none focus:border-amber-500"
+              />
+              <div className="text-xs text-zinc-500 mt-1">{Object.keys(currentResults).length} entries • paste this into a GitHub file or save anywhere as backup</div>
+            </div>
+
+            <div className="border-t border-zinc-800 pt-6">
+              <label className="text-xs text-zinc-400 uppercase tracking-wide font-bold block mb-2">Import</label>
+              <textarea
+                value={text}
+                onChange={e => handleParse(e.target.value)}
+                placeholder='Paste JSON here. Either {"results": {...}} or just {"47-S": {...}, ...}'
+                className="w-full h-40 bg-zinc-950 border border-zinc-700 rounded p-2 text-xs font-mono text-zinc-200 focus:outline-none focus:border-amber-500"
+              />
+              <div className="text-xs mt-2 min-h-[1.5rem]">
+                {error && <span className="text-red-400">{error}</span>}
+                {parsed && (
+                  <div className="text-zinc-300">
+                    <span className="text-emerald-400 font-semibold">{parsed.valid} valid entries</span>
+                    {parsed.invalid > 0 && <span className="text-orange-400"> • {parsed.invalid} unknown event id{parsed.invalid === 1 ? '' : 's'} ({parsed.invalidIds.join(', ')}{parsed.invalid > 3 ? '…' : ''}) — will be ignored</span>}
+                  </div>
+                )}
+              </div>
+              <div className="flex gap-2 mt-3">
+                <button
+                  onClick={() => handleApply('merge')}
+                  disabled={!parsed || parsed.valid === 0}
+                  className={`flex-1 py-2 rounded font-semibold text-sm ${parsed && parsed.valid > 0 ? 'bg-amber-500 hover:bg-amber-400 text-black' : 'bg-zinc-700 text-zinc-500 cursor-not-allowed'}`}
+                >
+                  Merge with existing
+                </button>
+                <button
+                  onClick={() => { if (confirm('Replace ALL existing entries with the imported data?')) handleApply('replace'); }}
+                  disabled={!parsed || parsed.valid === 0}
+                  className={`flex-1 py-2 rounded font-semibold text-sm ${parsed && parsed.valid > 0 ? 'bg-red-600 hover:bg-red-500 text-white' : 'bg-zinc-700 text-zinc-500 cursor-not-allowed'}`}
+                >
+                  Replace all
+                </button>
+              </div>
+              <div className="text-xs text-zinc-500 mt-2 leading-relaxed">
+                <span className="text-zinc-300 font-semibold">Merge</span> keeps your current data and overrides matching event ids. <span className="text-zinc-300 font-semibold">Replace</span> wipes everything first.
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     function App() {
       const [results, setResults] = useState({});
       const [activeBracket, setActiveBracket] = useState('overview');
@@ -444,11 +671,26 @@
       const [streamMode, setStreamMode] = useState(false);
       const [filter, setFilter] = useState('all');
       const [loaded, setLoaded] = useState(false);
+      const [importOpen, setImportOpen] = useState(false);
+      const [externalRanks, setExternalRanks] = useState({});
+      const [lockPassword, setLockPassword] = useState(null);
+      const [unlocked, setUnlocked] = useState(true);
+      const [unlockInput, setUnlockInput] = useState('');
+      const [unlockError, setUnlockError] = useState(false);
+
+      const canEdit = !lockPassword || unlocked;
 
       useEffect(() => {
         try {
           const r = localStorage.getItem('ggpoker-tracker-results');
           if (r) setResults(JSON.parse(r));
+          const er = localStorage.getItem('ggpoker-tracker-external-ranks');
+          if (er) setExternalRanks(JSON.parse(er));
+          const lp = localStorage.getItem('ggpoker-tracker-lock');
+          if (lp) {
+            setLockPassword(lp);
+            setUnlocked(false);
+          }
         } catch (e) {}
         setLoaded(true);
       }, []);
@@ -459,6 +701,48 @@
         catch (e) { console.error('save failed', e); }
       }, [results, loaded]);
 
+      useEffect(() => {
+        if (!loaded) return;
+        try { localStorage.setItem('ggpoker-tracker-external-ranks', JSON.stringify(externalRanks)); }
+        catch (e) { console.error('save failed', e); }
+      }, [externalRanks, loaded]);
+
+      useEffect(() => {
+        if (!loaded) return;
+        try {
+          if (lockPassword) localStorage.setItem('ggpoker-tracker-lock', lockPassword);
+          else localStorage.removeItem('ggpoker-tracker-lock');
+        } catch (e) { console.error('save failed', e); }
+      }, [lockPassword, loaded]);
+
+      const tryUnlock = () => {
+        if (unlockInput === lockPassword) {
+          setUnlocked(true);
+          setUnlockInput('');
+          setUnlockError(false);
+        } else {
+          setUnlockError(true);
+          setTimeout(() => setUnlockError(false), 2000);
+        }
+      };
+      const handleSetPassword = () => {
+        const pw = prompt(lockPassword ? 'Enter new password:' : 'Choose a password (e.g. 1234):\n\nNote: this is a light barrier, not real security. If you forget the password you\'ll have to clear browser data for this site (export your data first as a backup).', '');
+        if (pw && pw.trim()) {
+          setLockPassword(pw.trim());
+        }
+      };
+      const handleRemoveLock = () => {
+        if (confirm('Remove the edit lock? Anyone with access to this app will be able to modify data.')) {
+          setLockPassword(null);
+          setUnlocked(true);
+          setUnlockInput('');
+        }
+      };
+      const handleLockNow = () => {
+        setUnlocked(false);
+        setUnlockInput('');
+      };
+
       const leaderboards = useMemo(() => computePoints(results), [results]);
       const totalPoints = BRACKETS.reduce((s, b) => s + leaderboards[b].totalPoints, 0);
       const allResolved = useMemo(() =>
@@ -466,6 +750,21 @@
       const playedCount = allResolved.filter(ep => ep.status === 'played').length;
       const skippedCount = allResolved.filter(ep => ep.status === 'skipped').length;
       const autoSkippedCount = allResolved.filter(ep => ep.status === 'skipped' && ep.auto).length;
+
+      const totalPL = useMemo(() => {
+        let pl = 0, pendingTop10 = 0, pending = 0, pcount = 0;
+        for (const ep of allResolved) {
+          if (ep.status !== 'played' || !ep.finish || !ep.entrants) continue;
+          pcount++;
+          if (ep.net != null) pl += ep.net;
+          else {
+            pl -= ep.event.buyIn;
+            pending++;
+            if (ep.top10) pendingTop10++;
+          }
+        }
+        return { pl, pendingTop10, pending, pcount };
+      }, [allResolved]);
 
       const handleSaveResult = (eventId, data) => {
         setResults(prev => {
@@ -476,10 +775,28 @@
         });
       };
 
+      const handleImport = (importedResults, importedRanks, mode) => {
+        const validKeys = new Set(SCHEDULE.map(e => e.id));
+        const filtered = {};
+        for (const [k, v] of Object.entries(importedResults)) {
+          if (validKeys.has(k) && v && typeof v === 'object') filtered[k] = v;
+        }
+        setResults(prev => mode === 'replace' ? filtered : { ...prev, ...filtered });
+        if (importedRanks) {
+          const filteredRanks = {};
+          for (const b of BRACKETS) {
+            if (typeof importedRanks[b] === 'string') filteredRanks[b] = importedRanks[b];
+          }
+          setExternalRanks(prev => mode === 'replace' ? filteredRanks : { ...prev, ...filteredRanks });
+        } else if (mode === 'replace') {
+          setExternalRanks({});
+        }
+      };
+
       if (streamMode) {
         return (
           <div className="relative">
-            <StreamOverlay leaderboards={leaderboards} results={results} playedCount={playedCount} />
+            <StreamOverlay leaderboards={leaderboards} results={results} playedCount={playedCount} totalPoints={totalPoints} netPL={totalPL.pl} externalRanks={externalRanks} />
             <button onClick={() => setStreamMode(false)} className="fixed top-4 right-4 bg-zinc-800 hover:bg-zinc-700 text-white px-3 py-2 rounded text-xs flex items-center gap-2"><EyeOff size={14} /> Exit Stream</button>
           </div>
         );
@@ -490,6 +807,7 @@
         if (filter === 'skipped') return ep.status === 'skipped';
         if (filter === 'past-pending') return ep.status === 'pending' && isPast(ep.event.date);
         if (filter === 'upcoming') return ep.status === 'pending' && !isPast(ep.event.date);
+        if (filter === 'missing-winnings') return ep.missingWinnings;
         return true;
       });
       const eventsByDate = {};
@@ -517,6 +835,46 @@
                 <button onClick={() => setStreamMode(true)} className="bg-gradient-to-r from-amber-500 to-red-600 hover:from-amber-400 hover:to-red-500 text-black font-bold px-4 py-2 rounded-lg flex items-center gap-2 text-sm"><Eye size={16} /> Stream Mode</button>
               </div>
             </header>
+
+            {lockPassword && !unlocked && (
+              <div className={`mb-4 rounded-xl border p-4 ${unlockError ? 'border-red-500/60 bg-red-950/30' : 'border-amber-700/50 bg-amber-950/30'}`}>
+                <div className="flex flex-col md:flex-row md:items-center gap-3">
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                    <div className={unlockError ? 'text-red-400' : 'text-amber-400'}><Lock size={20}/></div>
+                    <div className="min-w-0">
+                      <div className={`font-bold text-sm ${unlockError ? 'text-red-300' : 'text-amber-200'}`}>{unlockError ? 'Wrong password' : 'Read-only mode'}</div>
+                      <div className="text-zinc-400 text-xs">Enter password to edit data this session</div>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="password"
+                      value={unlockInput}
+                      onChange={e => setUnlockInput(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') tryUnlock(); }}
+                      placeholder="password"
+                      autoFocus
+                      className="bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500 flex-1 min-w-0"
+                    />
+                    <button onClick={tryUnlock} className="bg-amber-500 hover:bg-amber-400 text-black font-semibold px-4 py-2 rounded text-sm whitespace-nowrap">Unlock</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="bg-gradient-to-br from-zinc-900 to-black border border-zinc-800 rounded-xl p-5 mb-3 flex items-center justify-between gap-4 flex-wrap">
+              <div className="min-w-0">
+                <div className="text-xs text-zinc-400 uppercase tracking-widest font-bold flex items-center gap-2"><DollarSign size={12} /> Net Profit / Loss</div>
+                <div className={`text-4xl md:text-5xl font-black tabular-nums mt-1 ${totalPL.pl > 0 ? 'text-emerald-400' : totalPL.pl < 0 ? 'text-red-400' : 'text-zinc-300'}`}>{fmtPL(totalPL.pl)}</div>
+                <div className="text-xs text-zinc-500 mt-1">across {totalPL.pcount} played event{totalPL.pcount === 1 ? '' : 's'}{totalPL.pending > 0 && <span> • {totalPL.pending} missing winnings</span>}</div>
+              </div>
+              {totalPL.pendingTop10 > 0 && (
+                <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-3 text-sm">
+                  <div className="text-amber-400 font-bold flex items-center gap-2"><AlertTriangle size={14} /> {totalPL.pendingTop10} top-10% finish{totalPL.pendingTop10 === 1 ? '' : 'es'} missing winnings</div>
+                  <div className="text-zinc-400 text-xs mt-1">P/L assumes buy-in lost — fill in to update</div>
+                </div>
+              )}
+            </div>
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
               <StatCard icon={Trophy} label="Total Points" value={totalPoints.toFixed(2)} subvalue="across all 4 brackets" color="#fbbf24" />
@@ -586,11 +944,54 @@
                     <p className="text-zinc-500 text-xs pt-2 border-t border-zinc-800">Tip: open any event and mark it Played, Skipped, or leave it pending. Stream Mode gives you a clean overlay you can capture with OBS as a browser source.</p>
                   </div>
                 </div>
-                {(playedCount + skippedCount) > 0 && (
-                  <div className="text-center">
-                    <button onClick={() => { if (confirm('Clear all entries?')) setResults({}); }} className="text-xs text-zinc-500 hover:text-red-400 underline">Reset all entries</button>
+                <div className="bg-zinc-900/40 border border-zinc-800 rounded-xl p-5">
+                  <h3 className="text-amber-400 font-bold text-sm uppercase tracking-wider mb-1 flex items-center gap-2"><Award size={16} /> External Rankings</h3>
+                  <div className="text-xs text-zinc-500 mb-4 leading-relaxed">Your rank vs other players from the official leaderboard. Free text — paste whatever format your source gives you ("Top 5%", "#12", "12 / 1200"). Shown on the stream overlay.</div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {BRACKETS.map(b => (
+                      <div key={b}>
+                        <label className="text-xs uppercase tracking-wide font-bold mb-1 block" style={{color: BRACKET_COLOR[b]}}>{BRACKET_LABEL[b]} ({b})</label>
+                        <input
+                          type="text"
+                          value={externalRanks[b] || ''}
+                          onChange={e => setExternalRanks(prev => ({...prev, [b]: e.target.value}))}
+                          placeholder="—"
+                          disabled={!canEdit}
+                          className={`w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500 ${!canEdit ? 'opacity-60 cursor-not-allowed' : ''}`}
+                        />
+                      </div>
+                    ))}
                   </div>
-                )}
+                </div>
+                <div className="bg-zinc-900/40 border border-zinc-800 rounded-xl p-5">
+                  <h3 className="text-zinc-400 font-bold text-sm uppercase tracking-wider mb-3">Data</h3>
+                  <div className="flex flex-wrap gap-2">
+                    <button onClick={() => canEdit && setImportOpen(true)} disabled={!canEdit} className={`bg-zinc-800 hover:bg-zinc-700 text-white text-sm font-semibold px-4 py-2 rounded ${!canEdit ? 'opacity-50 cursor-not-allowed hover:bg-zinc-800' : ''}`}>Import / Export…</button>
+                    {(playedCount + skippedCount) > 0 && (
+                      <button onClick={() => { if (canEdit && confirm('Clear all entries? This cannot be undone.')) { setResults({}); setExternalRanks({}); } }} disabled={!canEdit} className={`bg-zinc-800 hover:bg-red-900/40 hover:text-red-300 text-zinc-400 text-sm font-semibold px-4 py-2 rounded ${!canEdit ? 'opacity-50 cursor-not-allowed hover:bg-zinc-800 hover:text-zinc-400' : ''}`}>Reset all entries</button>
+                    )}
+                  </div>
+                  <div className="text-xs text-zinc-500 mt-3 leading-relaxed">Export gives you a JSON snapshot you can save in a GitHub file. Paste that JSON back into Import on any device to restore or sync.</div>
+
+                  {canEdit && (
+                    <div className="mt-4 pt-4 border-t border-zinc-800">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs text-zinc-400 flex items-center gap-1.5"><Lock size={12} /> {lockPassword ? <span><span className="text-amber-400">Edit lock enabled</span> — app starts read-only each session</span> : 'No edit lock'}</span>
+                      </div>
+                      <div className="flex flex-wrap gap-2 mt-2">
+                        {lockPassword ? (
+                          <>
+                            <button onClick={handleSetPassword} className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold px-3 py-1.5 rounded">Change password</button>
+                            <button onClick={handleLockNow} className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold px-3 py-1.5 rounded">Lock now</button>
+                            <button onClick={handleRemoveLock} className="bg-zinc-800 hover:bg-red-900/40 hover:text-red-300 text-zinc-400 text-xs font-semibold px-3 py-1.5 rounded">Remove lock</button>
+                          </>
+                        ) : (
+                          <button onClick={handleSetPassword} className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold px-3 py-1.5 rounded">Set lock password</button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -616,10 +1017,19 @@
                         <div className="text-2xl font-bold text-amber-400 font-mono">+{leaderboards[activeBracket].biggestScore.points.toFixed(2)}</div>
                       </div>
                     )}
+                    <div>
+                      <div className="text-xs uppercase tracking-widest text-zinc-400 flex items-center gap-1">
+                        Net P/L
+                        {leaderboards[activeBracket].bracketPendingTop10 > 0 && (
+                          <span className="text-amber-400" title={`${leaderboards[activeBracket].bracketPendingTop10} top-10% finish(es) missing winnings`}><AlertTriangle size={11} /></span>
+                        )}
+                      </div>
+                      <div className={`text-2xl font-bold font-mono ${leaderboards[activeBracket].bracketPL > 0 ? 'text-emerald-400' : leaderboards[activeBracket].bracketPL < 0 ? 'text-red-400' : 'text-zinc-300'}`}>{fmtPL(leaderboards[activeBracket].bracketPL)}</div>
+                    </div>
                   </div>
                 </div>
                 <div className="flex gap-2 mb-3 overflow-x-auto">
-                  {[{v:'all',l:'All'},{v:'played',l:'Played'},{v:'skipped',l:'Skipped'},{v:'past-pending',l:'Need to Record'},{v:'upcoming',l:'Upcoming'}].map(f => (
+                  {[{v:'all',l:'All'},{v:'played',l:'Played'},{v:'skipped',l:'Skipped'},{v:'past-pending',l:'Need to Record'},{v:'missing-winnings',l:'Missing Winnings'},{v:'upcoming',l:'Upcoming'}].map(f => (
                     <button key={f.v} onClick={() => setFilter(f.v)} className={`px-3 py-1.5 rounded text-xs font-semibold flex-shrink-0 ${filter === f.v ? 'bg-zinc-700 text-white' : 'bg-zinc-900 text-zinc-400 hover:text-white'}`}>{f.l}</button>
                   ))}
                 </div>
@@ -630,7 +1040,7 @@
                       <div className="flex items-center gap-2 text-xs text-zinc-400 uppercase tracking-wider font-bold mb-2 px-1"><Calendar size={12} />{fmtDate(date)}</div>
                       <div className="space-y-1.5">
                         {eventsByDate[date].sort((a,b) => a.event.time.localeCompare(b.event.time)).map(ep => (
-                          <EventRow key={ep.event.id} ep={ep} onClick={() => setEditEvent(ep.event)} />
+                          <EventRow key={ep.event.id} ep={ep} onClick={() => canEdit && setEditEvent(ep.event)} />
                         ))}
                       </div>
                     </div>
@@ -640,6 +1050,7 @@
             )}
           </div>
           {editEvent && <EventModal event={editEvent} result={results[editEvent.id]} onSave={(data) => handleSaveResult(editEvent.id, data)} onClose={() => setEditEvent(null)} />}
+          {importOpen && <ImportModal currentResults={results} currentExternalRanks={externalRanks} onImport={handleImport} onClose={() => setImportOpen(false)} />}
         </div>
       );
     }
