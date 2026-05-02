@@ -220,16 +220,18 @@
           }
           // Money tracking
           let net = null, itm = false, top10 = false, missingWinnings = false;
+          const entries = (r?.status === 'played' && r.entries) ? r.entries : 1;
+          const cost = e.buyIn * entries;
           if (r?.status === 'played' && r.finish && r.entrants) {
             itm = inTheMoney(r.finish, r.entrants);
             top10 = isTop10Pct(r.finish, r.entrants);
             if (r.winnings != null && !isNaN(r.winnings)) {
-              net = r.winnings - e.buyIn;
+              net = r.winnings - cost;
             } else {
               missingWinnings = true; // played but winnings not recorded
             }
           }
-          return { event: e, points, status, rank, prizePool: r?.prizePool, entrants: r?.entrants, finish: r?.finish, auto: r?.auto, winnings: r?.winnings, itm, top10, net, missingWinnings };
+          return { event: e, points, status, rank, prizePool: r?.prizePool, entrants: r?.entrants, finish: r?.finish, auto: r?.auto, winnings: r?.winnings, itm, top10, net, missingWinnings, entries, cost };
         });
         const totalPoints = eventPoints.reduce((s, ep) => s + ep.points, 0);
         const playedEvents = eventPoints.filter(ep => ep.status === 'played');
@@ -243,17 +245,17 @@
           if (ep.status !== 'played' || !ep.finish || !ep.entrants) continue;
           if (ep.net != null) bracketPL += ep.net;
           else {
-            bracketPL -= ep.event.buyIn;
+            bracketPL -= ep.cost;
             bracketPending++;
             if (ep.top10) bracketPendingTop10++;
           }
-          bracketVolume += ep.event.buyIn;
+          bracketVolume += ep.cost;
           bracketPlayedN++;
           const r = ep.finish / ep.entrants;
           if (r <= 0.15) bracketTop15++;
           if (r <= 0.05) bracketTop5++;
-          const eventNet = ep.net != null ? ep.net : -ep.event.buyIn;
-          if (ep.event.buyIn > 0) bracketAvgROISum += (eventNet / ep.event.buyIn) * 100;
+          const eventNet = ep.net != null ? ep.net : -ep.cost;
+          if (ep.cost > 0) bracketAvgROISum += (eventNet / ep.cost) * 100;
         }
         const bracketROI = bracketVolume > 0 ? (bracketPL / bracketVolume) * 100 : 0;
         const bracketAvgROI = bracketPlayedN > 0 ? bracketAvgROISum / bracketPlayedN : 0;
@@ -301,16 +303,19 @@
       );
       const [finishStr, setFinishStr] = useState(result?.finish != null ? String(result.finish) : '');
       const [winningsStr, setWinningsStr] = useState(result?.winnings != null ? String(result.winnings) : '');
+      const [entriesStr, setEntriesStr] = useState(result?.entries != null ? String(result.entries) : '1');
 
       const prizePool = parseMoneyInput(prizePoolStr);
       const entrants = entrantsStr === '' ? null : parseInt(entrantsStr, 10);
       const finish = finishStr === '' ? null : parseInt(finishStr, 10);
       const winnings = parseMoneyInput(winningsStr);
+      const entries = entriesStr === '' ? 1 : parseInt(entriesStr, 10);
 
       const prizePoolValid = prizePoolStr === '' || (prizePool != null && prizePool > 0);
       const entrantsValid = entrants == null || (entrants > 0 && Number.isFinite(entrants));
       const finishValid = finish == null || (finish > 0 && (entrants == null || finish <= entrants));
       const winningsValid = winningsStr === '' || (winnings != null && winnings >= 0);
+      const entriesValid = entries != null && Number.isFinite(entries) && entries >= 1;
 
       const itm = inTheMoney(finish, entrants);
       const top10 = isTop10Pct(finish, entrants);
@@ -320,7 +325,7 @@
         : null;
 
       const canSave = status === 'pending' || (
-        prizePoolValid && entrantsValid && finishValid && winningsValid &&
+        prizePoolValid && entrantsValid && finishValid && winningsValid && entriesValid &&
         (status !== 'played' || (finish != null && entrants != null))
       );
 
@@ -333,6 +338,7 @@
           entrants: entrants || null,
           finish: status === 'played' ? finish : null,
           winnings: status === 'played' && winningsStr !== '' && winnings != null ? winnings : null,
+          entries: status === 'played' ? entries : null,
         });
         onClose();
       };
@@ -397,6 +403,25 @@
                   </div>
                   {status === 'played' && (
                     <div>
+                      <label className="text-xs text-zinc-400 uppercase tracking-wide block mb-1">Entries <span className="normal-case tracking-normal text-zinc-600">(re-buys / re-entries)</span></label>
+                      <input
+                        type="number"
+                        min={1}
+                        value={entriesStr}
+                        onChange={e => setEntriesStr(e.target.value)}
+                        placeholder="1"
+                        className={`w-full bg-zinc-800 border rounded px-3 py-2 text-white text-sm focus:outline-none ${entriesValid ? 'border-zinc-700 focus:border-amber-500' : 'border-red-500'}`}
+                      />
+                      <div className="text-xs mt-1 h-4">
+                        {!entriesValid && <span className="text-red-400">Must be 1 or more</span>}
+                        {entriesValid && entries > 1 && (
+                          <span className="text-zinc-500">Total spent: <span className="text-zinc-200 font-mono">{fmt$(event.buyIn * entries)}</span></span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  {status === 'played' && (
+                    <div>
                       <label className="text-xs text-zinc-400 uppercase tracking-wide block mb-1">Your Finish Position</label>
                       <input
                         type="number"
@@ -457,9 +482,10 @@
     }
 
     function EventRow({ ep, onClick }) {
-      const { event, points, status, rank, prizePool, finish, entrants, auto, winnings, missingWinnings, top10 } = ep;
+      const { event, points, status, rank, prizePool, finish, entrants, auto, winnings, missingWinnings, top10, entries } = ep;
       const past = isPast(event.date);
       const warnMissing = missingWinnings && top10;
+      const showEntries = status === 'played' && entries > 1;
       const statusBadge = {
         played: <span className="text-emerald-400 text-xs font-bold">PLAYED</span>,
         skipped: auto
@@ -480,7 +506,7 @@
             </div>
             <div className="text-xs text-zinc-500 flex gap-3 mt-0.5 flex-wrap items-center">
               <span>{fmtDate(event.date)}</span>
-              <span>{fmt$(event.buyIn)}</span>
+              <span>{fmt$(event.buyIn)}{showEntries && <span className="text-amber-400 font-semibold"> ×{entries}</span>}</span>
               {prizePool && <span>{fmt$(prizePool)} pool</span>}
               {finish && entrants && <span className="text-amber-400">{finish}/{entrants}</span>}
               {status === 'played' && winnings != null && (
@@ -822,7 +848,7 @@
           pcount++;
           if (ep.net != null) pl += ep.net;
           else {
-            pl -= ep.event.buyIn;
+            pl -= ep.cost;
             pending++;
             if (ep.top10) pendingTop10++;
           }
@@ -831,23 +857,25 @@
       }, [allResolved]);
 
       const metrics = useMemo(() => {
-        let volume = 0, top5 = 0, top15 = 0, n = 0;
+        let volume = 0, top5 = 0, top15 = 0, n = 0, totalEntries = 0;
         let sumPerEventROI = 0;
         for (const ep of allResolved) {
           if (ep.status !== 'played' || !ep.finish || !ep.entrants) continue;
           n++;
-          volume += ep.event.buyIn;
+          volume += ep.cost;
+          totalEntries += ep.entries;
           const r = ep.finish / ep.entrants;
           if (r <= 0.15) top15++;
           if (r <= 0.05) top5++;
-          // Per-event ROI for averaging (uses conservative -buyIn for missing winnings)
-          const eventNet = ep.net != null ? ep.net : -ep.event.buyIn;
-          if (ep.event.buyIn > 0) sumPerEventROI += (eventNet / ep.event.buyIn) * 100;
+          // Per-event ROI for averaging (uses conservative -cost for missing winnings)
+          const eventNet = ep.net != null ? ep.net : -ep.cost;
+          if (ep.cost > 0) sumPerEventROI += (eventNet / ep.cost) * 100;
         }
         return {
           n,
+          totalEntries,
           volume,
-          avgBuyIn: n > 0 ? volume / n : 0,
+          avgBuyIn: totalEntries > 0 ? volume / totalEntries : 0,
           roi: volume > 0 ? (totalPL.pl / volume) * 100 : 0,
           avgROI: n > 0 ? sumPerEventROI / n : 0,
           top5, top15,
@@ -870,7 +898,7 @@
         const points = [];
         let cum = 0;
         for (const ep of events) {
-          const net = ep.net != null ? ep.net : -ep.event.buyIn;
+          const net = ep.net != null ? ep.net : -ep.cost;
           cum += net;
           points.push({
             date: ep.event.date,
@@ -997,7 +1025,7 @@
                     </span>
                   </div>
                 )}
-                <div className="text-xs text-zinc-500 mt-1">across {totalPL.pcount} played event{totalPL.pcount === 1 ? '' : 's'}{metrics.n > 0 && <span> • avg buy-in {fmt$(metrics.avgBuyIn)}</span>}{totalPL.pending > 0 && <span> • {totalPL.pending} missing winnings</span>}</div>
+                <div className="text-xs text-zinc-500 mt-1">across {totalPL.pcount} played event{totalPL.pcount === 1 ? '' : 's'}{metrics.totalEntries > metrics.n && <span> ({metrics.totalEntries} entries)</span>}{metrics.n > 0 && <span> • avg buy-in {fmt$(metrics.avgBuyIn)}{metrics.totalEntries > metrics.n ? '/entry' : ''}</span>}{totalPL.pending > 0 && <span> • {totalPL.pending} missing winnings</span>}</div>
               </div>
               {totalPL.pendingTop10 > 0 && (
                 <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-3 text-sm">
@@ -1008,7 +1036,7 @@
             </div>
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
-              <StatCard icon={Coins} label="Volume" value={fmt$(metrics.volume)} subvalue={metrics.n > 0 ? `${metrics.n} played event${metrics.n === 1 ? '' : 's'}` : 'no plays yet'} color="#fbbf24" />
+              <StatCard icon={Coins} label="Volume" value={fmt$(metrics.volume)} subvalue={metrics.n > 0 ? `${metrics.n} event${metrics.n === 1 ? '' : 's'}${metrics.totalEntries > metrics.n ? ` • ${metrics.totalEntries} entries` : ''}` : 'no plays yet'} color="#fbbf24" />
               <StatCard icon={TrendingUp} label="Top 5%" value={metrics.n > 0 ? `${metrics.top5Pct.toFixed(1)}%` : '—'} subvalue={metrics.n > 0 ? `${metrics.top5} of ${metrics.n} played` : 'no plays yet'} color="#10b981" />
               <StatCard icon={Percent} label="Top 15%" value={metrics.n > 0 ? `${metrics.top15Pct.toFixed(1)}%` : '—'} subvalue={metrics.n > 0 ? `${metrics.top15} of ${metrics.n} played` : 'no plays yet'} color="#3b82f6" />
               <StatCard icon={Target} label="Events Played" value={playedCount} subvalue={`${skippedCount} skipped${autoSkippedCount ? ` (${autoSkippedCount} auto)` : ''} • ${SCHEDULE.length - playedCount - skippedCount} upcoming`} color="#a78bfa" />
